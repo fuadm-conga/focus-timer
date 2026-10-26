@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Deep Work Timer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;500;600&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one centered instrument — a bezel-ticked ring with controls beneath, nothing else competing. */
+:root {
+  --bg: #f3f4fa;
+  --surface: #ffffff;
+  --ink: #141a33;
+  --muted: #5d6380;
+  --track: #e1e3ef;
+  --accent: #3b3fd8;
+  --accent-soft: #e6e7fd;
+  --line: #d6d9e8;
+  --display: "Sora", "Segoe UI", system-ui, sans-serif;
+  --body: "Plus Jakarta Sans", "Segoe UI", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0c1024; --surface: #151a35; --ink: #eef0fb; --muted: #9aa0c2;
+  --track: #232a4d; --accent: #8c8fff; --accent-soft: #232766; --line: #2a3158; color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #0c1024; --surface: #151a35; --ink: #eef0fb; --muted: #9aa0c2;
+  --track: #232a4d; --accent: #8c8fff; --accent-soft: #232766; --line: #2a3158; color-scheme: dark;
+}
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px;
+  display: grid; place-items: center;
+  padding-block: 32px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  box-sizing: border-box;
+}
+main { width: 100%; max-width: 440px; display: grid; gap: 28px; justify-items: center; }
+header { text-align: center; display: grid; gap: 6px; }
+.eyebrow { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+h1 { font-family: var(--display); font-weight: 500; font-size: 26px; margin: 0; text-wrap: balance; }
+
+.ring { position: relative; width: min(340px, 100%); aspect-ratio: 1; max-width: 100%; }
+.ring svg { width: 100%; height: 100%; display: block; transform: rotate(-90deg); }
+.ticks line { stroke: var(--line); stroke-width: 1.5; }
+.ticks line.major { stroke: var(--muted); stroke-width: 2; }
+.track { fill: none; stroke: var(--track); stroke-width: 14; }
+.progress { fill: none; stroke: var(--accent); stroke-width: 14; stroke-linecap: round; transition: stroke .3s; }
+.glow { fill: none; stroke: var(--accent); stroke-width: 14; opacity: 0; filter: blur(10px); }
+.running .glow { animation: breathe 4s ease-in-out infinite; }
+@keyframes breathe { 0%,100% { opacity: .12 } 50% { opacity: .38 } }
+.readout { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 4px; }
+.time { font-family: var(--display); font-weight: 300; font-size: clamp(52px, 17vw, 76px); font-variant-numeric: tabular-nums; letter-spacing: -.02em; line-height: 1; }
+.state { font-size: 13px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; font-weight: 600; }
+
+.controls { display: flex; gap: 12px; }
+button { font: inherit; cursor: pointer; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); padding: 12px 22px; font-weight: 600; transition: transform .1s, background .2s; }
+button:active { transform: scale(.97); }
+button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+#toggle { background: var(--accent); border-color: var(--accent); color: var(--bg); min-width: 128px; }
+
+.length { width: 100%; display: grid; gap: 12px; padding-top: 20px; border-top: 1px solid var(--line); }
+.length-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
+.chip { padding: 8px 14px; font-weight: 500; font-size: 14px; }
+.chip[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+label { font-size: 13px; color: var(--muted); }
+.custom { display: flex; align-items: center; gap: 8px; }
+input[type="number"] { width: 72px; font: inherit; font-variant-numeric: tabular-nums; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); text-align: center; }
+input:disabled, .chip:disabled { opacity: .5; cursor: not-allowed; }
+.tally { font-size: 13px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) { .running .glow { animation: none; opacity: .2; } button { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="eyebrow">Focus session</span>
+    <h1>One task. Nothing else.</h1>
+  </header>
+
+  <div class="ring" id="ring">
+    <svg viewBox="0 0 200 200" aria-hidden="true">
+      <g class="ticks" id="ticks"></g>
+      <circle class="track" cx="100" cy="100" r="84"></circle>
+      <circle class="glow" id="glow" cx="100" cy="100" r="84"></circle>
+      <circle class="progress" id="progress" cx="100" cy="100" r="84"></circle>
+    </svg>
+    <div class="readout">
+      <div class="time" id="time" role="timer" aria-live="off">25:00</div>
+      <div class="state" id="state">Ready</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="toggle" type="button">Start</button>
+    <button id="reset" type="button">Reset</button>
+  </div>
+
+  <section class="length" aria-label="Session length">
+    <div class="length-row" id="presets">
+      <button class="chip" type="button" data-min="15">15 min</button>
+      <button class="chip" type="button" data-min="25" aria-pressed="true">25 min</button>
+      <button class="chip" type="button" data-min="50">50 min</button>
+      <span class="custom">
+        <label for="minutes">Custom</label>
+        <input id="minutes" type="number" min="1" max="180" step="1" value="25" inputmode="numeric">
+      </span>
+    </div>
+    <div class="tally" id="tally">0 sessions completed · 0 min focused</div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const R = 84, C = 2 * Math.PI * R;
+const progress = $('progress'), glow = $('glow');
+[progress, glow].forEach(c => { c.style.strokeDasharray = C; c.style.strokeDashoffset = 0; });
+
+// Bezel: 60 ticks, every 5th a major mark, like a clock face.
+const ticks = $('ticks');
+for (let i = 0; i < 60; i++) {
+  const a = i / 60 * 2 * Math.PI, major = i % 5 === 0;
+  const r1 = 97, r2 = major ? 91 : 94;
+  const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  l.setAttribute('x1', 100 + r1 * Math.cos(a)); l.setAttribute('y1', 100 + r1 * Math.sin(a));
+  l.setAttribute('x2', 100 + r2 * Math.cos(a)); l.setAttribute('y2', 100 + r2 * Math.sin(a));
+  if (major) l.classList.add('major');
+  ticks.appendChild(l);
+}
+
+let lengthMs = 25 * 60e3, remaining = lengthMs, endAt = 0, raf = 0, running = false;
+let done = 0, focusedMin = 0;
+
+const fmt = ms => {
+  const s = Math.ceil(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+  const mm = String(m).padStart(2, '0'), ss = String(sec).padStart(2, '0');
+  return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+};
+
+function paint() {
+  const frac = remaining / lengthMs;
+  const off = C * (1 - frac);
+  progress.style.strokeDashoffset = off; glow.style.strokeDashoffset = off;
+  $('time').textContent = fmt(remaining);
+  document.title = running ? `${fmt(remaining)} · Deep Work Timer` : 'Deep Work Timer';
+}
+
+function setState(text) {
+  $('state').textContent = text;
+  $('ring').classList.toggle('running', running);
+  $('toggle').textContent = running ? 'Pause' : (remaining < lengthMs && remaining > 0 ? 'Resume' : 'Start');
+  const lock = running || remaining < lengthMs;
+  document.querySelectorAll('.chip').forEach(b => b.disabled = lock);
+  $('minutes').disabled = lock;
+}
+
+function tick() {
+  remaining = Math.max(0, endAt - Date.now());
+  paint();
+  if (remaining === 0) return finish();
+  raf = requestAnimationFrame(tick);
+}
+
+function start() {
+  if (remaining === 0) remaining = lengthMs;
+  endAt = Date.now() + remaining; running = true;
+  setState('Focusing'); tick();
+}
+function pause() {
+  cancelAnimationFrame(raf); remaining = Math.max(0, endAt - Date.now()); running = false;
+  paint(); setState('Paused');
+}
+function reset() {
+  cancelAnimationFrame(raf); running = false; remaining = lengthMs; paint(); setState('Ready');
+}
+function finish() {
+  running = false; done++; focusedMin += Math.round(lengthMs / 60e3);
+  $('tally').textContent = `${done} session${done === 1 ? '' : 's'} completed · ${focusedMin} min focused`;
+  setState('Session complete'); chime();
+}
+
+let audio;
+function chime() {
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    [523.25, 659.25, 783.99].forEach((f, i) => {
+      const o = audio.createOscillator(), g = audio.createGain(), t = audio.currentTime + i * .18;
+      o.frequency.value = f; o.type = 'sine';
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(.18, t + .02); g.gain.exponentialRampToValueAtTime(.001, t + 1.2);
+      o.connect(g).connect(audio.destination); o.start(t); o.stop(t + 1.3);
+    });
+  } catch (e) {}
+}
+
+function setLength(min) {
+  min = Math.min(180, Math.max(1, Math.round(min) || 25));
+  lengthMs = min * 60e3; remaining = lengthMs;
+  $('minutes').value = min;
+  document.querySelectorAll('.chip').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.min === min)));
+  paint(); setState('Ready');
+}
+
+$('toggle').addEventListener('click', () => {
+  // Unlock audio inside the user gesture so the end chime can play later.
+  try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch (e) {}
+  running ? pause() : start();
+});
+$('reset').addEventListener('click', reset);
+$('presets').addEventListener('click', e => { const b = e.target.closest('.chip'); if (b && !b.disabled) setLength(+b.dataset.min); });
+$('minutes').addEventListener('change', e => setLength(+e.target.value));
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); $('toggle').click(); }
+  if (e.key === 'r' || e.key === 'R') reset();
+});
+
+paint(); setState('Ready');
+</script>
+</body>
+</html>
