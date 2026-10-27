@@ -1,14 +1,9 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Media;
-using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
-using System.Text.Json;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -16,8 +11,6 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.Windows.Threading;
-using Microsoft.Identity.Client;
-using Microsoft.Identity.Client.Broker;
 using Shapes = System.Windows.Shapes;
 
 namespace FocusTimer;
@@ -30,15 +23,14 @@ static class Program
 
 enum Corner { TopLeft, TopRight, BottomLeft, BottomRight }
 
-// Always-on-top focus timer that sits in a screen corner, with your next Outlook meeting underneath.
+// Always-on-top focus timer that sits in a screen corner.
 // Drag it to any corner of any monitor and it snaps there; right-click for options.
 class TimerWindow : Window
 {
     static readonly SolidColorBrush Surface = Hex("#151A35"), Ink = Hex("#EEF0FB"), Muted = Hex("#9AA0C2"),
-        Track = Hex("#232A4D"), Hover = Hex("#2E3566"), Accent = Hex("#8C8FFF"), Done = Hex("#6FD3A8"),
-        Warn = Hex("#F5B95C"), Line = Hex("#2A3158");
+        Track = Hex("#232A4D"), Hover = Hex("#2E3566"), Accent = Hex("#8C8FFF"), Done = Hex("#6FD3A8");
     const double RingSize = 128, Stroke = 9, Gap = 8; // Gap sits outside the 10px shadow margin
-    const string PlayGlyph = "", PauseGlyph = "", ResetGlyph = "", CalendarGlyph = ""; // Segoe Fluent Icons
+    const string PlayGlyph = "", PauseGlyph = "", ResetGlyph = ""; // Segoe Fluent Icons
     static readonly int[] Presets = { 15, 25, 50 };
 
     static readonly string SettingsFile = Path.Combine(
@@ -67,23 +59,15 @@ class TimerWindow : Window
         BorderThickness = new Thickness(0), HorizontalContentAlignment = HorizontalAlignment.Center,
         VerticalContentAlignment = VerticalAlignment.Center, ToolTip = "Custom length in minutes (1–180), then Enter",
     };
-    readonly TextBlock meetingTitle = new()
-    {
-        FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = Ink, TextTrimming = TextTrimming.CharacterEllipsis,
-    };
-    readonly TextBlock meetingWhen = new() { FontSize = 11, Foreground = Muted };
     UIElement lengthRow = null!;
     Border closeButton = null!;
     readonly DispatcherTimer ticker =new() { Interval = TimeSpan.FromMilliseconds(33) };
-    readonly DispatcherTimer clock = new() { Interval = TimeSpan.FromSeconds(1) };
-    readonly DispatcherTimer calendarRefresh = new() { Interval = TimeSpan.FromMinutes(5) };
 
     TimeSpan length = TimeSpan.FromMinutes(25), remaining;
     DateTime endAt;
-    bool running, placed, fetching;
+    bool running, placed;
     Corner corner = Corner.BottomRight;
     POINT? savedCenter;
-    (string Title, DateTime Start)? meeting;
 
     IntPtr Hwnd => new WindowInteropHelper(this).Handle;
     bool Idle => !running && remaining == length;
@@ -107,9 +91,7 @@ class TimerWindow : Window
         ContextMenu = BuildMenu();
 
         ticker.Tick += (_, _) => Tick();
-        clock.Tick += (_, _) => PaintMeeting();
-        calendarRefresh.Tick += async (_, _) => await RefreshMeeting(interactive: false);
-        Loaded += async (_, _) =>
+        Loaded += (_, _) =>
         {
             var monitor = savedCenter is POINT p ? MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST)
                                                  : MonitorFromPoint(default, MONITOR_DEFAULTTOPRIMARY);
@@ -118,12 +100,9 @@ class TimerWindow : Window
             placed = true;
             Paint();
             SetState("READY");
-            clock.Start();
-            calendarRefresh.Start();
-            await RefreshMeeting(interactive: false);
         };
-        // Content height changes (meeting text) or a DPI change on another monitor resize the window from its
-        // top-left, so re-anchor to the corner after layout settles.
+        // Hover-revealed rows or a DPI change on another monitor resize the window from its top-left,
+        // so re-anchor to the corner.
         SizeChanged += (_, _) =>
         {
             if (placed) SnapTo(CurrentMonitor(), corner); // synchronous, so hover-revealed rows don't flicker past the screen edge
@@ -184,7 +163,7 @@ class TimerWindow : Window
             {
                 Children =
                 {
-                    new StackPanel { Children = { ring, buttons, lengthRow, BuildMeetingRow() } },
+                    new StackPanel { Children = { ring, buttons, lengthRow } },
                     closeButton,
                 },
             },
@@ -243,30 +222,6 @@ class TimerWindow : Window
         return row;
     }
 
-    UIElement BuildMeetingRow()
-    {
-        var text = new StackPanel { Children = { meetingTitle, meetingWhen } };
-        Grid.SetColumn(text, 1);
-        var row = new Grid
-        {
-            Margin = new Thickness(0, 14, 0, 0), Background = Brushes.Transparent, Cursor = Cursors.Hand,
-            ColumnDefinitions = { new ColumnDefinition { Width = GridLength.Auto }, new ColumnDefinition() },
-            Children =
-            {
-                new Border { Width = 28, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 0, 0),
-                             Child = Glyph(CalendarGlyph, Muted, 14) },
-                text,
-            },
-        };
-        row.MouseLeftButtonDown += async (_, e) => { e.Handled = true; await RefreshMeeting(interactive: true); };
-        ShowMeeting("Checking calendar…", "", Muted);
-        return new Border
-        {
-            BorderBrush = Line, BorderThickness = new Thickness(0, 1, 0, 0), Margin = new Thickness(0, 14, 0, 0),
-            Child = row,
-        };
-    }
-
     ContextMenu BuildMenu()
     {
         var menu = new ContextMenu();
@@ -281,13 +236,10 @@ class TimerWindow : Window
             item.Click += (_, _) => SnapTo(CurrentMonitor(), c);
             cornerMenu.Items.Add(item);
         }
-        var refresh = new MenuItem { Header = "Refresh calendar" };
-        refresh.Click += async (_, _) => await RefreshMeeting(interactive: true);
         var exit = new MenuItem { Header = "Exit" };
         exit.Click += (_, _) => Close();
 
         menu.Items.Add(cornerMenu);
-        menu.Items.Add(refresh);
         menu.Items.Add(new Separator());
         menu.Items.Add(exit);
         menu.Opened += (_, _) =>
@@ -404,112 +356,6 @@ class TimerWindow : Window
         fig.Segments.Add(new ArcSegment(new Point(c + r * Math.Sin(a), c - r * Math.Cos(a)),
             new Size(r, r), 0, frac > 0.5, SweepDirection.Clockwise, true));
         arc.Data = new PathGeometry(new[] { fig });
-    }
-
-    // ---- Next Outlook meeting (read-only, via Microsoft Graph) ----
-
-    // Microsoft Graph PowerShell's public client: already trusted in most Entra tenants and registered for the
-    // Windows account broker, so a joined PC signs in silently. Swap in your own app registration's ID if your
-    // tenant blocks it. Only Calendars.Read is requested, so the app can never change your calendar.
-    const string ClientId = "14d82eec-204b-4c2f-b7e8-296a70dab67e";
-    static readonly string[] Scopes = { "Calendars.Read" };
-    static readonly HttpClient Http = new();
-    IPublicClientApplication? msal;
-
-    async Task<string?> GetToken(bool interactive)
-    {
-        msal ??= PublicClientApplicationBuilder.Create(ClientId)
-            .WithAuthority("https://login.microsoftonline.com/organizations")
-            .WithBroker(new BrokerOptions(BrokerOptions.OperatingSystems.Windows) { Title = "Focus Timer" })
-            .WithParentActivityOrWindow(() => Hwnd)
-            .Build();
-        try
-        {
-            var result = await msal.AcquireTokenSilent(Scopes, PublicClientApplication.OperatingSystemAccount).ExecuteAsync();
-            return result.AccessToken;
-        }
-        catch (MsalUiRequiredException) when (interactive)
-        {
-            var result = await msal.AcquireTokenInteractive(Scopes)
-                .WithAccount(PublicClientApplication.OperatingSystemAccount).ExecuteAsync();
-            return result.AccessToken;
-        }
-        catch (MsalUiRequiredException)
-        {
-            return null; // never pop a sign-in window on our own; wait for a click
-        }
-    }
-
-    async Task RefreshMeeting(bool interactive)
-    {
-        if (fetching) return;
-        fetching = true;
-        try
-        {
-            var token = await GetToken(interactive);
-            if (token == null) { meeting = null; ShowMeeting("Connect calendar", "Click to sign in to Outlook", Accent); return; }
-
-            var now = DateTime.UtcNow;
-            var url = "https://graph.microsoft.com/v1.0/me/calendarView" +
-                $"?startDateTime={now:yyyy-MM-ddTHH:mm:ssZ}&endDateTime={now.AddHours(24):yyyy-MM-ddTHH:mm:ssZ}" +
-                "&$orderby=start/dateTime&$top=50&$select=subject,start,isAllDay,isCancelled,responseStatus";
-            using var req = new HttpRequestMessage(HttpMethod.Get, url);
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            req.Headers.Add("Prefer", "outlook.timezone=\"UTC\"");
-            using var res = await Http.SendAsync(req);
-            res.EnsureSuccessStatusCode();
-
-            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-            meeting = NextTimedMeeting(doc.RootElement.GetProperty("value"), now);
-            if (meeting == null) ShowMeeting("No meetings", "Nothing timed in the next 24 hours", Muted);
-            else PaintMeeting();
-        }
-        catch (Exception ex)
-        {
-            meeting = null;
-            ShowMeeting("Calendar unavailable", "Click to retry", Muted, ex.Message);
-        }
-        finally { fetching = false; }
-    }
-
-    static (string, DateTime)? NextTimedMeeting(JsonElement events, DateTime nowUtc)
-    {
-        foreach (var ev in events.EnumerateArray())
-        {
-            if (ev.GetProperty("isAllDay").GetBoolean() || ev.GetProperty("isCancelled").GetBoolean()) continue;
-            if (ev.GetProperty("responseStatus").GetProperty("response").GetString() == "declined") continue;
-            var start = DateTime.Parse(ev.GetProperty("start").GetProperty("dateTime").GetString()!,
-                CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
-            if (start <= nowUtc) continue; // already started; we want the next one
-            var subject = ev.TryGetProperty("subject", out var s) ? s.GetString() : null;
-            return (string.IsNullOrWhiteSpace(subject) ? "(No title)" : subject!, start);
-        }
-        return null;
-    }
-
-    void PaintMeeting()
-    {
-        if (meeting is not (string title, DateTime start)) return;
-        var left = start - DateTime.UtcNow;
-        if (left < TimeSpan.FromMinutes(-1)) { _ = RefreshMeeting(interactive: false); return; } // move on to the next one
-        ShowMeeting(title, $"{start.ToLocalTime():t} · {Until(left)}", left <= TimeSpan.FromMinutes(5) ? Warn : Muted);
-    }
-
-    static string Until(TimeSpan left)
-    {
-        if (left <= TimeSpan.Zero) return "starting now";
-        if (left.TotalHours >= 1) return $"in {(int)left.TotalHours}h {left.Minutes:00}m";
-        if (left.TotalMinutes >= 1) return $"in {(int)Math.Ceiling(left.TotalMinutes)} min";
-        return $"in {(int)Math.Ceiling(left.TotalSeconds)} s";
-    }
-
-    void ShowMeeting(string title, string when, Brush whenColor, string? tip = null)
-    {
-        meetingTitle.Text = title;
-        meetingTitle.ToolTip = tip ?? title;
-        meetingWhen.Text = when;
-        meetingWhen.Foreground = whenColor;
-        meetingWhen.Visibility = when.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
 
     // ---- Placement (physical pixels, any monitor) ----
